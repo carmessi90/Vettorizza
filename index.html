@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PNG in SVG — Vettorizza</title>
+<script src="https://cdn.jsdelivr.net/npm/imagetracerjs@1.2.6/imagetracer_v1.2.6.min.js"></script>
+<style>
+  *{ box-sizing:border-box; }
+  body{
+    margin:0; padding:0; background:#f4f6f9; color:#1b2430;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    min-height:100vh;
+  }
+  .wrap{ max-width:720px; margin:0 auto; padding:32px 18px 70px; }
+  h1{ font-size:24px; margin:0 0 6px; text-align:center; }
+  p.sub{ color:#6b7684; font-size:14.5px; margin:0 0 26px; text-align:center; }
+
+  .card{ background:#fff; border-radius:12px; box-shadow:0 2px 14px rgba(20,30,50,0.07); padding:22px; }
+
+  .drop{
+    border:2px dashed #cfd6e0; border-radius:10px; min-height:150px;
+    display:flex; align-items:center; justify-content:center; flex-direction:column; gap:6px;
+    text-align:center; cursor:pointer; padding:24px; transition:border-color .15s;
+  }
+  .drop:active{ border-color:#2f6feb; }
+  .drop input{ display:none; }
+  .drop strong{ font-size:16px; }
+  .drop span{ font-size:13px; color:#8a93a1; }
+
+  .row{ display:flex; gap:10px; align-items:center; margin-top:16px; flex-wrap:wrap; }
+  select{ flex:1; min-width:160px; padding:10px 12px; border-radius:8px; border:1px solid #d8dee6; font-size:14px; background:#fff; }
+
+  button{
+    margin-top:16px; font-size:15px; font-weight:600; border:none; border-radius:8px;
+    background:#2f6feb; color:#fff; padding:14px 20px; width:100%; cursor:pointer;
+  }
+  button:disabled{ opacity:.4; }
+  #status{ margin-top:10px; font-size:13px; color:#6b7684; min-height:18px; text-align:center; }
+
+  #results{ display:none; margin-top:26px; }
+  .compare{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .pane{ border:1px solid #e4e8ee; border-radius:10px; padding:10px; text-align:center; background:#fafbfc; }
+  .pane h3{ font-size:11px; color:#8a93a1; text-transform:uppercase; letter-spacing:.04em; margin:0 0 8px; }
+  .pane img{ max-width:100%; max-height:260px; border-radius:4px; }
+  #saveLink{
+    display:block; text-align:center; margin-top:16px; background:#1b2430; color:#fff;
+    padding:13px 18px; border-radius:8px; text-decoration:none; font-weight:600; font-size:14px;
+  }
+  .hint{ text-align:center; color:#8a93a1; font-size:12px; margin-top:10px; line-height:1.5; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>PNG in SVG</h1>
+  <p class="sub">Vettorizzazione vera (curve reali), tutta nel browser — nessun upload su server.</p>
+
+  <div class="card">
+    <label class="drop" id="dropzone">
+      <strong id="dropText">Tocca per scegliere un'immagine</strong>
+      <span>PNG, JPG e altre immagini raster</span>
+      <input type="file" id="fileInput" accept="image/*">
+    </label>
+
+    <div class="row">
+      <select id="presetSelect">
+        <option value="ai">✨ AI (Vectorizer.AI — qualità migliore)</option>
+        <option value="logo">Logo/stemma pulito (locale)</option>
+        <option value="logoHD">Logo/stemma pulito, più dettaglio (locale)</option>
+        <option value="curvy">Curve morbide (locale)</option>
+        <option value="sharp">Bordi netti (locale)</option>
+        <option value="detailed">Molto dettagliato (locale)</option>
+        <option value="grayscale">Scala di grigi (locale)</option>
+      </select>
+    </div>
+
+    <button id="traceBtn" disabled>Vettorizza</button>
+    <div id="status"></div>
+
+    <div id="results">
+      <div class="compare">
+        <div class="pane"><h3>Originale</h3><img id="origOut"></div>
+        <div class="pane"><h3>Vettoriale</h3><img id="svgOut"></div>
+      </div>
+      <a id="saveLink" download="vettorizzato.svg">Salva SVG</a>
+      <p class="hint">Se "Salva SVG" non parte: tieni premuto (o tasto destro) sull'immagine "Vettoriale" qui sopra e scegli "Salva immagine".</p>
+    </div>
+  </div>
+</div>
+
+<canvas id="workCanvas" style="display:none;"></canvas>
+
+<script>
+var dropzone = document.getElementById('dropzone');
+var dropText = document.getElementById('dropText');
+var fileInput = document.getElementById('fileInput');
+var traceBtn = document.getElementById('traceBtn');
+var status_ = document.getElementById('status');
+var results = document.getElementById('results');
+var origOut = document.getElementById('origOut');
+var svgOut = document.getElementById('svgOut');
+var saveLink = document.getElementById('saveLink');
+var workCanvas = document.getElementById('workCanvas');
+var presetSelect = document.getElementById('presetSelect');
+var WORKER_URL = 'https://vettorizza-proxy.carmelo-messina-cm.workers.dev';
+
+var loadedImage = null;
+var loadedFile = null;
+var loadedName = 'immagine';
+
+fileInput.addEventListener('change', function(e){
+  var file = e.target.files[0];
+  if (!file) return;
+  loadedFile = file;
+  loadedName = (file.name || 'immagine').replace(/\.[^.]+$/, '');
+  status_.textContent = 'Caricamento immagine...';
+  var reader = new FileReader();
+  reader.onload = function(ev){
+    var img = new Image();
+    img.onload = function(){
+      loadedImage = img;
+      dropText.textContent = file.name + ' caricato — tocca per cambiare';
+      traceBtn.disabled = false;
+      status_.textContent = '';
+      results.style.display = 'none';
+    };
+    img.onerror = function(){ status_.textContent = 'Impossibile leggere questa immagine.'; };
+    img.src = ev.target.result;
+  };
+  reader.onerror = function(){ status_.textContent = 'Errore nella lettura del file.'; };
+  reader.readAsDataURL(file);
+});
+
+traceBtn.addEventListener('click', function(){
+  if (!loadedImage) return;
+  var preset = presetSelect.value;
+
+  if (preset === 'ai'){
+    traceBtn.disabled = true;
+    status_.textContent = 'Invio all\'AI in corso...';
+    var form = new FormData();
+    form.append('image', loadedFile);
+    fetch(WORKER_URL, { method: 'POST', body: form })
+      .then(function(resp){
+        if (!resp.ok){
+          return resp.text().then(function(t){ throw new Error(t || ('HTTP ' + resp.status)); });
+        }
+        return resp.text();
+      })
+      .then(function(svgString){
+        origOut.src = URL.createObjectURL(loadedFile);
+        var dataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgString);
+        svgOut.src = dataUrl;
+        saveLink.href = dataUrl;
+        saveLink.download = loadedName + '.svg';
+        results.style.display = 'block';
+        status_.textContent = 'Fatto (AI).';
+      })
+      .catch(function(err){
+        status_.textContent = 'Errore AI: ' + err.message;
+      })
+      .finally(function(){
+        traceBtn.disabled = false;
+      });
+    return;
+  }
+
+  if (typeof ImageTracer === 'undefined'){
+    status_.textContent = 'La libreria di vettorizzazione non si è caricata (serve connessione internet). Riprova.';
+    return;
+  }
+  traceBtn.disabled = true;
+  status_.textContent = 'Vettorizzazione in corso...';
+  setTimeout(function(){
+    try {
+      var maxSize = 1000;
+      var iw = loadedImage.naturalWidth, ih = loadedImage.naturalHeight;
+      var scale = Math.min(1, maxSize / Math.max(iw, ih));
+      var w = Math.max(1, Math.round(iw * scale));
+      var h = Math.max(1, Math.round(ih * scale));
+      workCanvas.width = w; workCanvas.height = h;
+      var ctx = workCanvas.getContext('2d');
+      ctx.clearRect(0,0,w,h);
+      ctx.drawImage(loadedImage, 0, 0, w, h);
+      var imgData = ctx.getImageData(0,0,w,h);
+
+      var options;
+      if (preset === 'logo'){
+        options = { numberofcolors: 10, colorquantcycles: 3, colorsampling: 0,
+          blurradius: 4, blurdelta: 24, pathomit: 40, ltres: 1, qtres: 1, rightangleenhance: true };
+      } else if (preset === 'logoHD'){
+        options = { numberofcolors: 16, colorquantcycles: 3, colorsampling: 0,
+          blurradius: 3, blurdelta: 18, pathomit: 20, ltres: 1, qtres: 1, rightangleenhance: true };
+      } else {
+        options = preset;
+      }
+      var svgString = ImageTracer.imagedataToSVG(imgData, options);
+
+      origOut.src = workCanvas.toDataURL('image/png');
+      var dataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgString);
+      svgOut.src = dataUrl;
+      saveLink.href = dataUrl;
+      saveLink.download = loadedName + '.svg';
+      results.style.display = 'block';
+      status_.textContent = 'Fatto.';
+    } catch (err){
+      status_.textContent = 'Errore: ' + err.message;
+    }
+    traceBtn.disabled = false;
+  }, 30);
+});
+</script>
+</body>
+</html>
